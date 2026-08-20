@@ -3,10 +3,14 @@ import { api } from '../lib/api.js';
 
 /** Card + repo -> branch. Base defaults to the repo's default branch. */
 export function BranchForm({ issue, cloudId, onCreated, existing = [] }) {
+  // Local clones are the default source: the repo you want is nearly always
+  // one you already have checked out, and reading it costs no API call.
+  const [source, setSource] = useState('local');
   const [orgs, setOrgs] = useState([]);
   const [org, setOrg] = useState('');
   const [repoQuery, setRepoQuery] = useState('');
   const [repos, setRepos] = useState([]);
+  const [local, setLocal] = useState({ repos: [], roots: [], loading: true });
   const [repo, setRepo] = useState(null);
   const [meta, setMeta] = useState(null);
   const [base, setBase] = useState('');
@@ -17,7 +21,19 @@ export function BranchForm({ issue, cloudId, onCreated, existing = [] }) {
 
   useEffect(() => {
     api.orgs().then(setOrgs).catch(() => setOrgs([]));
+    loadLocal(false);
   }, []);
+
+  function loadLocal(refresh) {
+    setLocal((l) => ({ ...l, loading: true }));
+    api
+      .localRepos(refresh)
+      .then((r) => setLocal({ repos: r.repos, roots: r.roots, loading: false }))
+      .catch((e) => {
+        setErr(e.message);
+        setLocal({ repos: [], roots: [], loading: false });
+      });
+  }
 
   // Regenerate the name whenever the card changes, unless the user edited it.
   useEffect(() => {
@@ -31,6 +47,7 @@ export function BranchForm({ issue, cloudId, onCreated, existing = [] }) {
   }, [issue?.key]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
+    if (source !== 'github') return undefined;
     const id = setTimeout(() => {
       api
         .repos({ org, q: repoQuery })
@@ -38,7 +55,7 @@ export function BranchForm({ issue, cloudId, onCreated, existing = [] }) {
         .catch((e) => setErr(e.message));
     }, repoQuery ? 350 : 0);
     return () => clearTimeout(id);
-  }, [org, repoQuery]);
+  }, [source, org, repoQuery]);
 
   async function pickRepo(r) {
     setRepo(r);
@@ -64,6 +81,7 @@ export function BranchForm({ issue, cloudId, onCreated, existing = [] }) {
         branch,
         issueKey: issue.key,
         cloudId,
+        localPath: repo.path,
       });
       setResult(r);
       onCreated?.();
@@ -92,34 +110,80 @@ export function BranchForm({ issue, cloudId, onCreated, existing = [] }) {
         )}
         {err && <div className="flash err">{err}</div>}
 
-        <div className="field">
-          <label>Organization</label>
-          <select className="input" value={org} onChange={(e) => { setOrg(e.target.value); setRepo(null); }}>
-            <option value="">My repositories</option>
-            {orgs.map((o) => <option key={o.login} value={o.login}>{o.login}</option>)}
-          </select>
+        <div className="row" style={{ gap: 4, marginBottom: 12 }}>
+          <button
+            className={`btn btn-sm ${source === 'local' ? 'btn-primary' : 'btn-invisible'}`}
+            onClick={() => { setSource('local'); setRepo(null); }}
+          >
+            Local clones ({local.repos.length})
+          </button>
+          <button
+            className={`btn btn-sm ${source === 'github' ? 'btn-primary' : 'btn-invisible'}`}
+            onClick={() => { setSource('github'); setRepo(null); }}
+          >
+            All on GitHub
+          </button>
+          <span style={{ flex: 1 }} />
+          {source === 'local' && (
+            <button className="btn btn-sm btn-invisible" onClick={() => loadLocal(true)}>Rescan</button>
+          )}
         </div>
+
+        {source === 'github' && (
+          <div className="field">
+            <label>Organization</label>
+            <select className="input" value={org} onChange={(e) => { setOrg(e.target.value); setRepo(null); }}>
+              <option value="">My repositories</option>
+              {orgs.map((o) => <option key={o.login} value={o.login}>{o.login}</option>)}
+            </select>
+          </div>
+        )}
 
         <div className="field">
           <label>Repository</label>
           <input
             className="input"
-            placeholder="Filter repositories…"
+            placeholder={source === 'local' ? 'Filter clones…' : 'Search repositories…'}
             value={repoQuery}
             onChange={(e) => setRepoQuery(e.target.value)}
           />
-          <div className="box" style={{ maxHeight: 180, overflowY: 'auto' }}>
-            {repos.slice(0, 60).map((r) => (
-              <div
-                key={r.fullName}
-                className={`box-row ${repo?.fullName === r.fullName ? 'selected' : ''}`}
-                onClick={() => pickRepo(r)}
-              >
-                <span style={{ flex: 1 }}>{r.fullName}</span>
-                {r.private && <span className="label">private</span>}
+          <div className="box" style={{ maxHeight: 200, overflowY: 'auto' }}>
+            {source === 'local'
+              ? filterLocal(local.repos, repoQuery).map((r) => (
+                  <div
+                    key={r.path}
+                    className={`box-row ${repo?.path === r.path ? 'selected' : ''}`}
+                    onClick={() => pickRepo(r)}
+                  >
+                    <div style={{ minWidth: 0, flex: 1 }}>
+                      <div className="row" style={{ gap: 6 }}>
+                        <span>{r.fullName}</span>
+                        {r.currentBranch && <span className="label">{r.currentBranch}</span>}
+                      </div>
+                      <div className="subtle" style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                        {r.path}
+                      </div>
+                    </div>
+                  </div>
+                ))
+              : repos.slice(0, 60).map((r) => (
+                  <div
+                    key={r.fullName}
+                    className={`box-row ${repo?.fullName === r.fullName && !repo?.path ? 'selected' : ''}`}
+                    onClick={() => pickRepo(r)}
+                  >
+                    <span style={{ flex: 1 }}>{r.fullName}</span>
+                    {r.private && <span className="label">private</span>}
+                  </div>
+                ))}
+            {source === 'local' && local.loading && <div className="box-body muted"><span className="spin" /> Scanning…</div>}
+            {source === 'local' && !local.loading && !local.repos.length && (
+              <div className="box-body muted">
+                No clones with a GitHub <code>origin</code> under {local.roots.join(', ') || '~/git'}.
+                Set <code>REPO_SCAN_ROOTS</code> to point elsewhere.
               </div>
-            ))}
-            {!repos.length && <div className="box-body muted">No repositories.</div>}
+            )}
+            {source === 'github' && !repos.length && <div className="box-body muted">No repositories.</div>}
           </div>
         </div>
 
@@ -155,6 +219,7 @@ export function BranchForm({ issue, cloudId, onCreated, existing = [] }) {
               Created <a href={result.url} target="_blank" rel="noreferrer">{result.branch}</a> from {result.base}
               {' '}<span className="mono-key">{String(result.sha).slice(0, 7)}</span>
             </div>
+            {result.localPath && <div className="subtle" style={{ marginTop: 4 }}>Local clone: {result.localPath}</div>}
             <div className="branch-preview" style={{ marginTop: 8 }}>{result.checkout}</div>
             <button className="btn btn-sm" style={{ marginTop: 8 }} onClick={() => navigator.clipboard.writeText(result.checkout)}>
               Copy checkout command
@@ -163,5 +228,13 @@ export function BranchForm({ issue, cloudId, onCreated, existing = [] }) {
         )}
       </div>
     </div>
+  );
+}
+
+function filterLocal(repos, q) {
+  if (!q) return repos;
+  const needle = q.toLowerCase();
+  return repos.filter(
+    (r) => r.fullName.toLowerCase().includes(needle) || r.path.toLowerCase().includes(needle),
   );
 }

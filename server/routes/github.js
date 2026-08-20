@@ -1,7 +1,11 @@
 import { config } from '../config.js';
 import { ghApi } from '../lib/gh.js';
+import { scanRoots } from '../lib/localRepos.js';
 import { buildBranchName, sanitizeRef } from '../lib/branchName.js';
-import { db, upsertRepo, insertBranchLink, listBranchLinks, recentBranchLinks, isFresh, markFresh } from '../db.js';
+import {
+  db, upsertRepo, insertBranchLink, listBranchLinks, recentBranchLinks,
+  upsertLocalRepo, listLocalRepos, pruneLocalRepos, isFresh, markFresh,
+} from '../db.js';
 
 /**
  * Every call below runs through `gh api`. The CLI supplies the credential, so
@@ -69,6 +73,41 @@ export default async function githubRoutes(app) {
     return { cached: false, repos };
   });
 
+  /**
+   * Repos already cloned on this machine, keyed by their `origin` remote.
+   * This is the default source for the picker: you almost always want the repo
+   * you already have checked out, and it needs no API call at all.
+   */
+  app.get('/api/local/repos', async (req) => {
+    const cacheKey = 'local:repos';
+    if (!req.query.refresh && isFresh(cacheKey, config.cacheTtlMs)) {
+      return { cached: true, roots: config.repoScan.roots, repos: listLocalRepos.all().map(fromLocalRow) };
+    }
+    const started = Date.now();
+    const found = scanRoots();
+    const tx = db.transaction((list) => {
+      for (const r of list) {
+        upsertLocalRepo.run({
+          path: r.path, full_name: r.fullName, owner: r.owner, repo: r.repo,
+          host: r.host, remote_url: r.remoteUrl, current_branch: r.currentBranch,
+          updated_at: started,
+        });
+      }
+      pruneLocalRepos.run(started); // clones that disappeared drop out of the cache
+    });
+    tx(found);
+    markFresh(cacheKey);
+    return {
+      cached: false,
+      roots: config.repoScan.roots,
+      scannedMs: Date.now() - started,
+      repos: found.map((r) => ({
+        path: r.path, fullName: r.fullName, owner: r.owner, name: r.repo,
+        currentBranch: r.currentBranch, remoteUrl: r.remoteUrl,
+      })),
+    };
+  });
+
   app.get('/api/github/repos/:owner/:repo/branches', async (req) => {
     const { owner, repo } = req.params;
     const [meta, branches] = await Promise.all([
@@ -92,7 +131,7 @@ export default async function githubRoutes(app) {
 
   /** The whole point of the app: card + repo -> new ref off a chosen base. */
   app.post('/api/github/branch', async (req, reply) => {
-    const { repo, base, branch, issueKey, cloudId } = req.body || {};
+    const { repo, base, branch, issueKey, cloudId, localPath } = req.body || {};
     if (!repo || !branch) return reply.code(400).send({ error: 'repo and branch are required' });
     const [owner, name] = String(repo).split('/');
     if (!owner || !name) return reply.code(400).send({ error: 'repo must be owner/name' });
@@ -124,9 +163,14 @@ export default async function githubRoutes(app) {
     });
 
     const url = `${meta.html_url}/tree/${ref}`;
+    // Only trust a local path that the scanner itself reported for this repo.
+    const known = localPath ? listLocalRepos.all().find((r) => r.path === localPath) : null;
+    const verifiedPath = known && known.full_name === repo ? known.path : null;
+
     insertBranchLink.run({
       issue_key: issueKey || null, cloud_id: cloudId || null, repo, branch: ref,
-      base: baseRef, sha: created.object?.sha, url, created_at: Date.now(),
+      base: baseRef, sha: created.object?.sha, url, local_path: verifiedPath,
+      created_at: Date.now(),
     });
 
     return {
@@ -135,7 +179,10 @@ export default async function githubRoutes(app) {
       base: baseRef,
       sha: created.object?.sha,
       url,
-      checkout: `git fetch origin ${ref} && git switch ${ref}`,
+      localPath: verifiedPath,
+      checkout: verifiedPath
+        ? `git -C ${verifiedPath} fetch origin ${ref} && git -C ${verifiedPath} switch ${ref}`
+        : `git fetch origin ${ref} && git switch ${ref}`,
     };
   });
 
@@ -145,6 +192,14 @@ export default async function githubRoutes(app) {
 }
 
 const enc = encodeURIComponent;
+const fromLocalRow = (r) => ({
+  path: r.path,
+  fullName: r.full_name,
+  owner: r.owner,
+  name: r.repo,
+  currentBranch: r.current_branch,
+  remoteUrl: r.remote_url,
+});
 const fromRow = (r) => ({
   fullName: r.full_name,
   owner: r.owner,

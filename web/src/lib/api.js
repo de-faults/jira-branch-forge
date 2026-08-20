@@ -35,6 +35,7 @@ export const api = {
     call(`/api/jira/sites/${cloudId}/issues/${key}/assign`, { method: 'POST', body: { accountId: 'me' } }),
 
   orgs: () => call('/api/github/orgs'),
+  localRepos: (refresh) => call(`/api/local/repos${refresh ? '?refresh=1' : ''}`),
   repos: (params) => call(`/api/github/repos?${new URLSearchParams(params)}`),
   branches: (fullName) => call(`/api/github/repos/${fullName}/branches`),
   previewBranch: (body) => call('/api/github/branch/preview', { method: 'POST', body }),

@@ -57,6 +57,17 @@ CREATE TABLE IF NOT EXISTS gh_repos (
   pushed_at      TEXT,
   updated_at     INTEGER NOT NULL
 );
+CREATE TABLE IF NOT EXISTS local_repos (
+  path           TEXT PRIMARY KEY,
+  full_name      TEXT NOT NULL,
+  owner          TEXT NOT NULL,
+  repo           TEXT NOT NULL,
+  host           TEXT,
+  remote_url     TEXT,
+  current_branch TEXT,
+  updated_at     INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_local_full ON local_repos (full_name);
 CREATE TABLE IF NOT EXISTS branch_links (
   id         INTEGER PRIMARY KEY AUTOINCREMENT,
   issue_key  TEXT NOT NULL,
@@ -66,6 +77,7 @@ CREATE TABLE IF NOT EXISTS branch_links (
   base       TEXT NOT NULL,
   sha        TEXT,
   url        TEXT,
+  local_path TEXT,
   created_at INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_links_issue ON branch_links (issue_key);
@@ -74,6 +86,12 @@ CREATE TABLE IF NOT EXISTS cache_meta (
   updated_at INTEGER NOT NULL
 );
 `);
+
+// Additive migrations for databases created by an earlier version.
+for (const [table, column, decl] of [['branch_links', 'local_path', 'TEXT']]) {
+  const cols = db.prepare(`PRAGMA table_info(${table})`).all();
+  if (!cols.some((c) => c.name === column)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${decl}`);
+}
 
 const touchStmt = db.prepare(
   'INSERT INTO cache_meta (key, updated_at) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET updated_at = excluded.updated_at',
@@ -119,9 +137,20 @@ export const upsertRepo = db.prepare(`
     default_branch=excluded.default_branch, private=excluded.private,
     pushed_at=excluded.pushed_at, updated_at=excluded.updated_at`);
 
+export const upsertLocalRepo = db.prepare(`
+  INSERT INTO local_repos (path, full_name, owner, repo, host, remote_url, current_branch, updated_at)
+  VALUES (@path, @full_name, @owner, @repo, @host, @remote_url, @current_branch, @updated_at)
+  ON CONFLICT(path) DO UPDATE SET
+    full_name=excluded.full_name, owner=excluded.owner, repo=excluded.repo,
+    host=excluded.host, remote_url=excluded.remote_url,
+    current_branch=excluded.current_branch, updated_at=excluded.updated_at`);
+
+export const listLocalRepos = db.prepare('SELECT * FROM local_repos ORDER BY updated_at DESC');
+export const pruneLocalRepos = db.prepare('DELETE FROM local_repos WHERE updated_at < ?');
+
 export const insertBranchLink = db.prepare(`
-  INSERT INTO branch_links (issue_key, cloud_id, repo, branch, base, sha, url, created_at)
-  VALUES (@issue_key, @cloud_id, @repo, @branch, @base, @sha, @url, @created_at)`);
+  INSERT INTO branch_links (issue_key, cloud_id, repo, branch, base, sha, url, local_path, created_at)
+  VALUES (@issue_key, @cloud_id, @repo, @branch, @base, @sha, @url, @local_path, @created_at)`);
 
 export const listBranchLinks = db.prepare(
   'SELECT * FROM branch_links WHERE issue_key = ? ORDER BY created_at DESC',

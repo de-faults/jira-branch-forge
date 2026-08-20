@@ -18,6 +18,7 @@ The design constraint was *never hold a typed-in token*, so:
 | CSRF | Every mutating request must carry a same-origin `Origin` header (a hostile page *can* reach localhost; this stops it). Session cookie is signed, `httpOnly`, `SameSite=Lax`. |
 | Logging | Pino serialisers pinned to method/url/status; `authorization`, `cookie`, and any `*token*`/`*secret*` key redacted before an upstream error body can be logged. |
 | Repo scope | `GITHUB_ORGS` allowlists which owners the picker and the branch-create endpoint will touch. |
+| Filesystem scan | Confined to `REPO_SCAN_ROOTS`, depth- and count-capped, never follows symlinks, and reads `.git/config` / `.git/HEAD` as plain files — no `git` subprocess is spawned per clone, so nothing in a scanned tree is ever executed. A `localPath` sent by the browser is only honoured if the scanner itself reported that exact path for that exact repo. |
 | Subprocess | `spawn('gh', [...])`, never a shell string, so a repo name or search term cannot become a command. API paths are validated (`/`-prefixed, no whitespace). 30 s timeout, 20 MB output cap, and a pinned env allowlist — `GH_TOKEN`/`GITHUB_TOKEN` are forwarded to the child untouched, never read into a variable. |
 
 The client secret Atlassian requires for confidential clients is read from env at
@@ -56,9 +57,14 @@ boot, never written to disk by this app and never sent to the browser.
    rather than failing at click time.
 5. Change status via the real transition list for that workflow; **Assign to me**
    claims an unassigned card when `ASSIGN_ISSUES` allows it.
-6. Choose org → repo → base branch. Push permission is checked before the button
+6. Choose the repo. The picker opens on **Local clones** — every directory under
+   `REPO_SCAN_ROOTS` (default `~/git`) whose `origin` points at GitHub, showing its
+   path and current branch. Switch to **All on GitHub** to search the org instead.
+   Then pick the base branch. Push permission is checked before the button
    enables, and again server-side. Branch name is generated from the card and stays
-   editable; the result gives you a `git fetch && git switch` line.
+   editable. The result gives you a checkout line — pointed at the actual clone
+   (`git -C /home/you/git/thing fetch origin … && git -C … switch …`) when the repo
+   came from the local list.
 
 Branch template: `BRANCH_TEMPLATE` env, default `{type}/{key}-{slug}` →
 `feature/PROJ-123-add-oauth-device-login`. Placeholders: `{type}` (mapped from the
@@ -75,7 +81,8 @@ server/
   db.js             better-sqlite3 cache schema + statements
   auth/jira.js      PKCE authorize, code exchange, refresh, jiraFetch
   routes/           auth.js · jira.js · github.js
-  lib/              gh.js (gh CLI adapter) · http.js (fetch + redaction) · branchName.js
+  lib/              gh.js (gh CLI adapter) · localRepos.js (clone scanner)
+                    http.js (fetch + redaction) · branchName.js
 web/src/            React UI, Primer tokens in styles.css
 ```
 
@@ -93,3 +100,5 @@ web/src/            React UI, Primer tokens in styles.css
   That is the trade you chose; switch to an OS keyring if it gets annoying.
 - Issue search caps at 50 results per query — there is no pagination UI yet.
 - Requires `gh` >= 2.x on `PATH`.
+- The clone scanner only recognises `origin`. A repo whose GitHub remote is named
+  something else (`upstream`, `fork`) will not appear in the local list.

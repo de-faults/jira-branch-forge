@@ -43,6 +43,17 @@ export const config = {
     },
   },
 
+  // Where to look for clones that already exist on this machine. The repo
+  // picker reads these instead of listing every repo in the org.
+  repoScan: {
+    roots: (process.env.REPO_SCAN_ROOTS || '~/git')
+      .split(',')
+      .map((s) => s.trim())
+      .filter(Boolean),
+    depth: int(process.env.REPO_SCAN_DEPTH, 3),
+    max: int(process.env.REPO_SCAN_MAX, 500),
+  },
+
   branchTemplate: process.env.BRANCH_TEMPLATE || '{type}/{key}-{slug}',
   cacheTtlMs: int(process.env.CACHE_TTL_MS, 5 * 60 * 1000),
 };
