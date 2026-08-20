@@ -37,12 +37,24 @@ boot, never written to disk by this app and never sent to the browser.
 2. **Atlassian app** — <https://developer.atlassian.com/console/myapps/> → OAuth 2.0 (3LO).
    Permissions: Jira API → `read:jira-work`, `write:jira-work`, `read:jira-user`.
    Callback URL: `http://127.0.0.1:4178/api/auth/jira/callback`.
-3. ```bash
-   cp .env.example .env   # fill JIRA_CLIENT_ID, JIRA_CLIENT_SECRET (+ GITHUB_ORGS)
-   npm install
-   npm run dev            # api :4178, ui :5173
+3. One command does the rest — preflight, dependencies, build, serve:
+   ```bash
+   ./run.sh               # or: npm start   → http://127.0.0.1:4178
    ```
-   Production-ish: `npm run build && npm start` → everything on :4178.
+   It checks node and `gh`, creates `.env` from the template on first run, warns
+   about a missing `repo` scope or an empty `JIRA_CLIENT_ID`, installs dependencies
+   only when `package-lock.json` is newer than `node_modules`, builds the UI, and
+   serves API and UI on the same port.
+
+   | Command | What it does |
+   |---|---|
+   | `./run.sh` | build + serve everything on `$PORT` (default 4178) |
+   | `./run.sh dev` | hot reload — API on `$PORT`, Vite UI on 5173 |
+   | `./run.sh check` | preflight only, changes nothing |
+   | `PORT=4179 ./run.sh` | run on another port |
+
+   Then fill `JIRA_CLIENT_ID` and `JIRA_CLIENT_SECRET` in the generated `.env`
+   and restart. GitHub needs nothing in `.env` at all.
 
 ## Flow
 
@@ -74,6 +86,7 @@ Jira issue type: bug→bugfix, story/task→feature, epic, spike, hotfix), `{key
 ## Layout
 
 ```
+run.sh              single entrypoint: preflight, deps, build, serve
 server/
   index.js          fastify boot, session cookie, CSRF + security headers
   config.js         env, loopback origin, scopes
